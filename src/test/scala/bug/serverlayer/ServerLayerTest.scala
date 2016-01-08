@@ -1,5 +1,7 @@
 package bug.serverlayer
 
+import java.io.File
+
 import scala.concurrent.duration.DurationInt
 
 import akka.actor.ActorSystem
@@ -15,6 +17,7 @@ import akka.stream.io.SslTlsInbound
 import akka.stream.io.SslTlsOutbound
 import akka.stream.io.SslTlsPlacebo
 import akka.stream.scaladsl.BidiFlow
+import akka.stream.scaladsl.FileIO
 import akka.stream.scaladsl.Flow
 import akka.stream.scaladsl.Keep
 import akka.stream.scaladsl.Sink
@@ -72,6 +75,22 @@ with Suite with FlatSpecLike with Matchers with ScalaFutures {
   @Test(groups = Array("unit"))
   def testServerLayer(): Unit = {
 
+
+    // write everything in a file
+    val file = new File("data.bin")
+    val runnableToFile = byteSource.toMat(FileIO.toFile(file))(Keep.left)
+    val bytePub = runnableToFile.run()
+
+    // Send the request and complete the in stream
+    bytePub.sendNext(requestA)
+    bytePub.sendComplete()
+
+    //finish writing to the file
+    Thread.sleep(1000)
+
+    val fileSource = FileIO.fromFile(file)
+
+
     /* httpSource ~> +-------------+ ~> byteSink
      *               | serverLayer |
      *   httpSink <~ +-------------+ <~ byteSource
@@ -82,16 +101,12 @@ with Suite with FlatSpecLike with Matchers with ScalaFutures {
         .viaMat(
           serverLayer
             .joinMat(
-              Flow.fromSinkAndSourceMat(byteSink, byteSource)(Keep.both))(Keep.right))(Keep.both)
+              Flow.fromSinkAndSourceMat(byteSink, fileSource)(Keep.both))(Keep.right))(Keep.both)
         .toMat(httpSink) {
-          case ((httpPub, (byteSub, bytePub)), httpSub) => ((httpPub, httpSub), (bytePub, byteSub))
+          case ((httpPub, (byteSub, _)), httpSub) => (httpPub, httpSub, byteSub)
         }
 
-    val ((httpPub, httpSub), (bytePub, byteSub)) = runnable.run()
-
-    // Send the request and complete the in stream
-    bytePub.sendNext(requestA)
-    bytePub.sendComplete()
+    val (httpPub, httpSub, byteSub) = runnable.run()
 
     // Receive the request and parse the headers
     // Have to use within(duration) because of issue #19326
