@@ -1,5 +1,7 @@
 package bug.serverlayer
 
+import java.io.File
+
 import scala.concurrent.duration.DurationInt
 
 import akka.actor.ActorSystem
@@ -32,6 +34,7 @@ import org.scalatest.Matchers
 import org.scalatest.Suite
 import org.scalatest.concurrent.ScalaFutures
 import org.testng.annotations.Test
+import akka.stream.io._
 
 /** Tests the Http().serverLayer used as an HTTP parser. */
 class ServerLayerTest extends TestKit(ActorSystem("test-system"))
@@ -72,6 +75,20 @@ class ServerLayerTest extends TestKit(ActorSystem("test-system"))
   @Test(groups = Array("unit"))
   def testServerLayer(): Unit = {
 
+    // write everything in a file
+    val file = new File("data.bin")
+    val runnableToFile = byteSource.toMat(SynchronousFileSink(file))(Keep.left)
+    val bytePub = runnableToFile.run()
+
+    // Send the request and complete the in stream
+    bytePub.sendNext(requestA)
+    bytePub.sendComplete()
+
+    //finish writing to the file
+    Thread.sleep(1000)
+
+    val fileSource = SynchronousFileSource(file)
+
     /* httpSource ~> +-------------+ ~> byteSink
      *               | serverLayer |
      *   httpSink <~ +-------------+ <~ byteSource
@@ -82,16 +99,12 @@ class ServerLayerTest extends TestKit(ActorSystem("test-system"))
         .viaMat(
           serverLayer
             .joinMat(
-              Flow.wrap(byteSink, byteSource)(Keep.both))(Keep.right))(Keep.both)
+              Flow.wrap(byteSink, fileSource)(Keep.both))(Keep.right))(Keep.both)
         .toMat(httpSink) {
-          case ((httpPub, (byteSub, bytePub)), httpSub) => ((httpPub, httpSub), (bytePub, byteSub))
+          case ((httpPub, (byteSub, _)), httpSub) => (httpPub, httpSub, byteSub)
         }
 
-    val ((httpPub, httpSub), (bytePub, byteSub)) = runnable.run()
-
-    // Send the request and complete the in stream
-    bytePub.sendNext(requestA)
-    bytePub.sendComplete()
+    val (httpPub, httpSub, byteSub) = runnable.run()
 
     // Receive the request and parse the headers
     httpSub.request(1)
